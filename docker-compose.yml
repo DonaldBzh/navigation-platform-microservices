@@ -1,0 +1,326 @@
+
+
+services:
+  # Kafka Infrastructure
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "22181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zk-data:/var/lib/zookeeper/data
+      - zk-txn-logs:/var/lib/zookeeper/log
+    networks:
+      - platform-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_OPTS: -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=kafka -Dcom.sun.management.jmxremote.rmi.port=9101
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - platform-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:29092 --list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - platform-network
+
+  # Redis Cache
+  # NOTE: If you have Redis in your main docker-compose for other services,
+  # you can remove this and use the shared Redis instance instead.
+  # Just update the connection string in appsettings to point to the shared Redis service name
+  redis-reward:
+    image: redis:7-alpine
+    container_name: redis-reward
+    ports:
+      - "6380:6379"  # Different port to avoid conflicts
+    volumes:
+      - redis_reward_data:/data
+    networks:
+      - platform-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+
+  # Database
+  identity-db:
+      image: postgres:16
+      container_name: platform-identity-db
+      environment:
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        POSTGRES_DB: identity
+      ports:
+        - "5432:5432"
+      volumes:
+        - pgdata-identity:/var/lib/postgresql/data
+      networks:
+        - platform-network
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+  users-db:
+      image: postgres:16
+      container_name: platform-users-db
+      environment:
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        POSTGRES_DB: users
+      ports:
+        - "5433:5432"
+      volumes:
+        - pgdata-user:/var/lib/postgresql/data
+      networks:
+        - platform-network
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+  journeys-db:
+      image: postgres:16
+      container_name: platform-journeys-db
+      environment:
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        POSTGRES_DB: journeys
+      ports:
+        - "5434:5432"
+      volumes:
+        - pgdata-journey:/var/lib/postgresql/data
+      networks:
+        - platform-network
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+  rewards-db:
+      image: postgres:16
+      container_name: platform-rewards-db
+      environment:
+        POSTGRES_USER: ${POSTGRES_USER}
+        POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        POSTGRES_DB: rewards
+      ports:
+        - "5435:5432"
+      volumes:
+        - pgdata-reward:/var/lib/postgresql/data
+      networks:
+        - platform-network
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+
+  # API Gateway
+  platform-gateway:
+      build:
+        context: .
+        dockerfile: ./src/NavigationPlatform.Gateway/NavigationPlatform.Gateway.Api/Dockerfile
+      container_name: platform-gateway
+      depends_on:
+        - platform-identity
+        - platform-user-management
+        - platform-journey
+        - platform-reward-worker
+      ports:
+        - "5043:80"
+      networks:
+        - platform-network
+      environment:
+        - ASPNETCORE_URLS=http://+:80
+        - ASPNETCORE_ENVIRONMENT=Development
+        # Use environment variables from .env
+        - JWT_SECRET=${JWT_SECRET}
+        - JWT_ISSUER=${JWT_ISSUER}
+        - JWT_AUDIENCE=${JWT_AUDIENCE}
+        - IDENTITY_SERVICE_URL=${IDENTITY_SERVICE_URL}
+        - USER_SERVICE_URL=${USER_SERVICE_URL}
+        - JOURNEY_SERVICE_URL=${JOURNEY_SERVICE_URL}
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+
+#   # Services (Note: No external ports needed now - all traffic goes through gateway)
+  platform-identity:
+      build:
+        context: .
+        dockerfile: ./src/NavigationPlatform.Identity/NavigationPlatform.Identity.Api/Dockerfile
+      container_name: platform-identity
+      depends_on:
+        kafka:
+          condition: service_healthy
+        identity-db:
+          condition: service_healthy
+      ports:
+        - "5044:80"
+      networks:
+        - platform-network
+      environment:
+        - ASPNETCORE_URLS=http://+:80
+        - ASPNETCORE_ENVIRONMENT=Development
+        # Use environment variables from .env
+        - IDENTITY_DB_CONNECTION=${IDENTITY_DB_CONNECTION}
+        - KAFKA_CONNECTION=${KAFKA_CONNECTION}
+        - JWT_SECRET=${JWT_SECRET}
+        - JWT_ISSUER=${JWT_ISSUER}
+        - JWT_AUDIENCE=${JWT_AUDIENCE}
+        - AUTH_ACCESS_TOKEN_EXPIRY_MINUTES=${AUTH_ACCESS_TOKEN_EXPIRY_MINUTES}
+        - AUTH_REFRESH_TOKEN_EXPIRY_MINUTES=${AUTH_REFRESH_TOKEN_EXPIRY_MINUTES}
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+
+  platform-user-management:
+      build:
+        context: .
+        dockerfile: ./src/NavigationPlatform.UserManagement/NavigationPlatform.UserManagement.Api/Dockerfile
+      container_name: platform-user-management
+      depends_on:
+        kafka:
+          condition: service_healthy
+        users-db:
+          condition: service_healthy
+      ports:
+        - "5045:80"
+      networks:
+        - platform-network
+      environment:
+        - ASPNETCORE_URLS=http://+:80
+        - ASPNETCORE_ENVIRONMENT=Development
+        # Use environment variables from .env
+        - USERS_DB_CONNECTION=${USERS_DB_CONNECTION}
+        - KAFKA_CONNECTION=${KAFKA_CONNECTION}
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+
+  platform-journey:
+      build:
+        context: .
+        dockerfile: ./src/NavigationPlatform.JourneyService/NavigationPlatform.JourneyService.Api/Dockerfile
+      container_name: platform-journey
+      depends_on:
+        journeys-db:
+          condition: service_healthy
+      ports:
+        - "5046:80"
+      networks:
+        - platform-network
+      environment:
+        - ASPNETCORE_URLS=http://+:80
+        - ASPNETCORE_ENVIRONMENT=Development
+        - JOURNEYS_DB_CONNECTION=${JOURNEYS_DB_CONNECTION}
+        - KAFKA_CONNECTION=${KAFKA_CONNECTION}
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+        interval: 30s
+        timeout: 10s
+        retries: 3
+
+  platform-reward-worker:
+      build:
+        context: .
+        dockerfile: ./src/NavigationPlatform.RewardService/NavigationPlatform.RewardService.Worker/Dockerfile
+      container_name: platform-reward-worker
+      depends_on:
+        rewards-db:
+          condition: service_healthy
+        redis-reward:
+          condition: service_healthy
+      ports:
+        - "5047:80"
+      networks:
+        - platform-network
+      environment:
+        - ASPNETCORE_URLS=http://+:80
+        - ASPNETCORE_ENVIRONMENT=Development
+        - REWARDS_DB_CONNECTION=${REWARDS_DB_CONNECTION}
+        - REDIS_CONNECTION=${REDIS_CONNECTION}
+        - KAFKA_CONNECTION=${KAFKA_CONNECTION}
+      healthcheck:
+          test: ["CMD", "curl", "-f", "http://localhost:80/healthz"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_started
+    entrypoint: ["/bin/bash", "-c", "/scripts/init-kafka-topics.sh"]
+    volumes:
+      - ./init-kafka-topics.sh:/scripts/init-kafka-topics.sh
+    networks:
+      - platform-network
+    restart: "no"
+
+volumes:
+  zk-data:
+  zk-txn-logs:
+  kafka-data:
+  pgdata-identity:
+  pgdata-user:
+  pgdata-journey:
+  pgdata-reward:
+  redis_reward_data:
+
+networks:
+  platform-network:
