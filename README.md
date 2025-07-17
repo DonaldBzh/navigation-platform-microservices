@@ -1,11 +1,16 @@
 # navigation-platform-microservices
 
+Start the project
+docker-compose up --build
+
 NET Core microservices platform with YARP gatewa
+
 ## 📌 Architecture
 
 ![Architecture Diagram](Architecture/architecture.png)
 
- Architecture Design Decisions & Trade-Offs (Navigation Platform)
+Architecture Design Decisions & Trade-Offs (Navigation Platform)
+
 1. Service-per-Domain with Independent Databases
 
 Decision: Each core domain (Identity, User Management, Journey, Rewards) is isolated in its own microservice and owns its database.
@@ -25,8 +30,8 @@ Decision: All client communication goes through a central YARP-powered API Gatew
 Why:
 To centralize authentication, routing, logging, and make backend services unreachable from the public network.
 Trade-offs:
-    Introduces a potential bottleneck or single point of failure
-    Requires custom configuration and versioning for evolving endpoints
+Introduces a potential bottleneck or single point of failure
+Requires custom configuration and versioning for evolving endpoints
 
 3.  Identity-Centric Auth with Token Issuance
 
@@ -41,19 +46,17 @@ Trade-offs:
 
     Event-driven user provisioning (e.g., UserRegistered → User Management) introduces temporal gaps where identity exists but profile does not
 
+Data Flow Examples
 
-Data Flow Examples 
-
-User registered data flow 
+User registered data flow
 
 ![Architecture Diagram](Architecture/user-register.png)
-
 
 User status changed
 
 ![Architecture Diagram](Architecture/userstatuschanged.png)
 
-Daily goal achieved 
+Daily goal achieved
 ![Architecture Diagram](Architecture/dailygoalachieved.png)
 
 CODE Coverage :
